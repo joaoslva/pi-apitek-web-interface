@@ -107,7 +107,8 @@ refused while the verified files were cleared.
 
 ## The UI
 
-Three tabs: **Live**, **Photos**, **Tapes**.
+Three tabs: **Live**, **Disk** (everything offloaded from the camera, photos
+and its own video clips, filterable to All / Photos / Videos), **Tapes**.
 
 - **Viewfinder toggle.** The sensor is idle until you ask for it. Plugging the
   camera in does not start it streaming — `camera-live` runs no ffmpeg at all
@@ -116,6 +117,8 @@ Three tabs: **Live**, **Photos**, **Tapes**.
 - **Shoot** saves the current frame. That frame is the camera's own JPEG, so a
   snapshot is a file copy at full native quality.
 - **In-app viewer** with prev/next cycling, for both photos and video.
+- **Export videos as MP4, MOV, WebM or MP3** — from the selection bar, or
+  from **Save** on a video in the viewer. See below.
 - **Select → Download .zip** for grabbing a batch. Submitted as a real form so
   the browser streams the download instead of buffering it in phone memory, and
   stored rather than deflated because JPEG does not compress twice.
@@ -151,6 +154,36 @@ with fragmented MP4 there; into a normal `+faststart` file it is fine.
 One trap when writing that: ffmpeg picks its muxer from the output **file
 extension**, so writing to a `.part` temp file fails instantly with "unable to
 find a suitable output format". Pass `-f mp4` explicitly.
+
+## Exporting in other formats
+
+Originals are MJPEG (the camera's AVI clips with ADPCM audio, the tapes with
+PCM in Matroska), which plays in VLC and not much else. Selected videos can
+be converted on the Pi instead. Timed for an 18.6 s tape:
+
+| Format | What | Time |
+|---|---|---|
+| MP4 | H.264 + AAC, hardware encoder | 3.9 s |
+| MOV | the MP4's streams remuxed, for Apple editors | +0.9 s |
+| WebM | VP9 + Opus, software, `-deadline realtime -cpu-used 8` | 12 s |
+| MP3 | audio only | 1.8 s |
+
+GIF took 45 s and came out bigger than the MJPEG, and `hevc_v4l2m2m` is
+listed by ffmpeg but finds no device — the Zero 2 W has no HEVC encoder.
+
+The MP4 is the same cached copy the **♪ Sound** button plays, so converting a
+clip once makes the next MP4 or MOV export of it nearly free. Photos in a
+selection go into the zip unchanged.
+
+Conversion is a background job (`POST /api/export`, polled at
+`/api/export/<id>`), not one long request: a long tape takes minutes, and a
+phone will not wait on a silent connection that long. Encodes run one at a
+time, closing the dialog cancels the job and kills its ffmpeg, and results are
+deleted 5 minutes after download or 30 minutes after finishing.
+
+**Camera clip names repeat across dumps** (see below), so the cache and zips
+both name them by dump folder. Before this, two `IMG_0003.AVI` from different
+dumps shared one cached MP4, and ♪ Sound could play the wrong clip.
 
 ## Live view
 
