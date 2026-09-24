@@ -12,7 +12,12 @@
 #   component    "platform" or "app"; default: both
 #   --list       print what each component ships, touch nothing
 #   --check      show what differs on the Pi, change nothing
-#   --no-reload  install without reloading systemd or udev
+#   --no-reload  install without reloading systemd or udev, or restarting
+#                services
+#
+# Running services whose unit file or executable changed are restarted, so a
+# deploy is live when this returns. Oneshots are not: they run the new file
+# next time, and restarting one could cut an offload short.
 #
 #   PI=joao@10.42.0.1 platform/deploy.sh
 
@@ -147,8 +152,30 @@ done < <(find "$S" -type f -print0 | sort -z)
 
 if printf '%s\n' "${changed[@]}" | grep -q '^/etc/systemd/'; then
   systemctl daemon-reload
-  echo "==> systemd reloaded (changed units are not restarted)"
+  echo "==> systemd reloaded"
 fi
+
+for unit in /etc/systemd/system/*.service; do
+  name="$(basename "$unit")"
+  case "$name" in *@.service) continue ;; esac  # templates are udev-started oneshots
+  [ "$(systemctl show -p Type --value "$name")" = oneshot ] && continue
+  systemctl -q is-active "$name" || continue
+  # ExecStart reads "{ path=/usr/local/bin/foo ; argv[]=... }".
+  exe="$(systemctl show -p ExecStart --value "$name" | sed -n 's/.*path=\([^ ;]*\).*/\1/p')"
+  hit=0
+  for c in "${changed[@]}"; do
+    if [ "$c" = "$unit" ] || [ "$c" = "$exe" ]; then hit=1; fi
+  done
+  [ "$hit" = 1 ] || continue
+  # Restarting camera-live ends a recording. Leave it for later instead.
+  if [ "$name" = camera-live.service ] &&
+     grep -Eq '"recording": *true' /srv/camera-drive/recstatus.json 2>/dev/null; then
+    echo "==> NOT restarting $name: a recording is in progress. Restart it afterwards."
+    continue
+  fi
+  systemctl restart "$name"
+  echo "==> restarted $name"
+done
 if printf '%s\n' "${changed[@]}" | grep -q '^/etc/udev/'; then
   udevadm control --reload
   # Re-run add rules for devices already plugged in, e.g. a camera in storage mode.

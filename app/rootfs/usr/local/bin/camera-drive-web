@@ -136,7 +136,8 @@ def list_dumps() -> list[dict]:
     if not MEDIA.exists():
         return dumps
     for folder in sorted(MEDIA.iterdir(), reverse=True):
-        if not folder.is_dir():
+        # Snapshots were shot through the app, so they live under Captures.
+        if not folder.is_dir() or folder.name == "snapshots":
             continue
         items = []
         for f in sorted(folder.iterdir(), reverse=True):
@@ -158,18 +159,42 @@ def list_dumps() -> list[dict]:
     return dumps
 
 
-def list_recordings() -> list[dict]:
+def _stamp(name: str) -> str:
+    """ "2026-08-17_175004.mkv" and "SNAP_2026-08-17_183539.jpg" both give
+    "2026-08-17_175004", so tapes and snapshots sort together."""
+    return Path(name).stem.removeprefix("SNAP_")
+
+
+def list_captures() -> list[dict]:
+    """What was shot through the app, tapes and snapshots together, newest
+    first and grouped by day. The files stay where camera-live writes them."""
     items = []
-    if not VIDEO.exists():
-        return items
-    for f in sorted(VIDEO.iterdir(), reverse=True):
-        if not f.is_file() or f.suffix.lower() not in VIDEO_SUFFIXES:
-            continue
-        items.append({"name": f.name, "path": f"video/{f.name}",
-                      "size": f.stat().st_size,
-                      "label": _pretty_folder(f.stem), "kind": "video",
-                      "proxy": proxy_path(f"video/{f.name}").exists()})
-    return items
+    if VIDEO.exists():
+        for f in VIDEO.iterdir():
+            if f.is_file() and f.suffix.lower() in VIDEO_SUFFIXES:
+                rel = f"video/{f.name}"
+                items.append({"name": f.name, "path": rel,
+                              "size": f.stat().st_size, "kind": "video",
+                              "proxy": proxy_path(rel).exists()})
+    snaps = MEDIA / "snapshots"
+    if snaps.exists():
+        for f in snaps.iterdir():
+            if f.is_file() and f.suffix.lower() in IMAGE_SUFFIXES:
+                items.append({"name": f.name, "path": f"media/snapshots/{f.name}",
+                              "size": f.stat().st_size, "kind": "image"})
+    items.sort(key=lambda i: _stamp(i["name"]), reverse=True)
+
+    groups: list[dict] = []
+    for i in items:
+        day = _stamp(i["name"])[:10]
+        if not groups or groups[-1]["day"] != day:
+            try:
+                label = datetime.strptime(day, "%Y-%m-%d").strftime("%d %b %Y")
+            except ValueError:
+                label = day
+            groups.append({"day": day, "label": label, "items": []})
+        groups[-1]["items"].append(i)
+    return groups
 
 
 def safe_media_path(rel: str) -> Path:
@@ -504,7 +529,7 @@ def api_state():
         "live": LIVE_JPG.exists(),
         "held": len(read_json(INDEX_PATH, {})),
         "dumps": list_dumps(),
-        "recordings": list_recordings(),
+        "captures": list_captures(),
     })
 
 
@@ -946,7 +971,7 @@ PAGE = r"""<!doctype html>
   <nav role="tablist">
     <button role="tab" data-tab="live" aria-selected="true">Live</button>
     <button role="tab" data-tab="disk" aria-selected="false">Disk</button>
-    <button role="tab" data-tab="recs" aria-selected="false">Tapes</button>
+    <button role="tab" data-tab="caps" aria-selected="false">Captures</button>
   </nav>
 </header>
 
@@ -966,7 +991,7 @@ PAGE = r"""<!doctype html>
       <button class="btn small" data-select="disk">Select</button>
       <button class="btn small danger" id="wipe" disabled>Wipe camera</button>
     </div>
-    <div class="seg" id="filter">
+    <div class="seg" data-filter="disk">
       <button data-f="all" aria-pressed="true">All</button>
       <button data-f="image" aria-pressed="false">Photos</button>
       <button data-f="video" aria-pressed="false">Videos</button>
@@ -974,12 +999,17 @@ PAGE = r"""<!doctype html>
     <div id="disk"></div>
   </div>
 
-  <div id="tab-recs" hidden>
+  <div id="tab-caps" hidden>
     <div class="row spread" style="margin-bottom:12px">
-      <button class="btn small" data-select="recs">Select</button>
-      <span class="muted" id="recnote"></span>
+      <button class="btn small" data-select="caps">Select</button>
+      <span class="muted">shot through this app</span>
     </div>
-    <div id="recs"></div>
+    <div class="seg" data-filter="caps">
+      <button data-f="all" aria-pressed="true">All</button>
+      <button data-f="image" aria-pressed="false">Photos</button>
+      <button data-f="video" aria-pressed="false">Videos</button>
+    </div>
+    <div id="caps"></div>
   </div>
 </main>
 
@@ -1031,8 +1061,12 @@ let selMode=null, sel=new Set(), lbList=[], lbIdx=0;
 const store={get:k=>{try{return localStorage.getItem(k);}catch(e){return null;}},
              set:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}}};
 
-// What the Disk tab shows: all, image or video.
-let diskFilter=['all','image','video'].includes(store.get('cd-filter'))?store.get('cd-filter'):'all';
+// What each gallery tab shows: all, image or video. Disk keeps the key it
+// had before Captures existed.
+const filterKey={disk:'cd-filter',caps:'cd-filter-caps'};
+const filters={};
+for(const t in filterKey){ const v=store.get(filterKey[t]);
+  filters[t]=['all','image','video'].includes(v)?v:'all'; }
 
 const FORMATS=[
   ['original','Original','as recorded, MJPEG; plays in VLC'],
@@ -1062,7 +1096,7 @@ document.querySelectorAll('nav button').forEach(b=>{
       x.setAttribute('aria-selected',String(x===b)));
     document.getElementById('tab-live').hidden=tab!=='live';
     document.getElementById('tab-disk').hidden=tab!=='disk';
-    document.getElementById('tab-recs').hidden=tab!=='recs';
+    document.getElementById('tab-caps').hidden=tab!=='caps';
     syncStream();
   };
 });
@@ -1120,7 +1154,7 @@ async function refresh(){
   rb.className='btn '+(r.recording?'stop':'rec');
   document.getElementById('livehint').textContent =
     r.recording?'recording to '+(r.file||'')+' — unplugging also stops it cleanly'
-    : ready?'shoot saves the camera’s own frame, no re-encoding'
+    : ready?'shoot saves the camera’s own frame to Captures, no re-encoding'
     : isLive?'sensor idle — nothing is being captured'
     : '';
 
@@ -1137,39 +1171,38 @@ function cell(i,idx,listName){
    +'<span class="badge">'+(i.kind==='video'?'▶':'')+fmt(i.size)+'</span></a>';
 }
 
-const shown=i=>diskFilter==='all'||i.kind===diskFilter;
-function flatDisk(){ return state.dumps.flatMap(d=>d.items.filter(shown)); }
+// Both gallery tabs are day or dump groups of items, drawn the same way.
+const groupsOf=t=>t==='disk'?state.dumps:state.captures;
+const shown=t=>i=>filters[t]==='all'||i.kind===filters[t];
+function flat(t){ return groupsOf(t).flatMap(g=>g.items.filter(shown(t))); }
 
-function render(){
-  const all=state.dumps.flatMap(d=>d.items);
+const EMPTY={
+  disk:'Nothing offloaded yet.<br>Plug the camera in as <code>storage</code>.',
+  caps:'Nothing captured yet.<br>Plug the camera in as <code>live</code>,<br>then Shoot or Record.',
+};
+function renderTab(t){
+  const all=groupsOf(t).flatMap(g=>g.items);
   const n={all:all.length,image:all.filter(i=>i.kind==='image').length,
            video:all.filter(i=>i.kind==='video').length};
-  document.querySelectorAll('#filter button').forEach(b=>{
-    b.setAttribute('aria-pressed',String(b.dataset.f===diskFilter));
+  document.querySelectorAll('[data-filter="'+t+'"] button').forEach(b=>{
+    b.setAttribute('aria-pressed',String(b.dataset.f===filters[t]));
     b.textContent={all:'All',image:'Photos',video:'Videos'}[b.dataset.f]+' '+n[b.dataset.f];
   });
-
-  const dk=document.getElementById('disk');
   let k=0;
-  const secs=state.dumps.map(d=>{
-    const items=d.items.filter(shown); if(!items.length) return '';
-    const cells=items.map(i=>cell(i,k++,'disk')).join('');
-    return '<section><h2>'+d.label+' <span>'+items.length+' / '
+  const secs=groupsOf(t).map(g=>{
+    const items=g.items.filter(shown(t)); if(!items.length) return '';
+    const cells=items.map(i=>cell(i,k++,t)).join('');
+    return '<section><h2>'+g.label+' <span>'+items.length+' / '
       +fmt(items.reduce((a,i)=>a+i.size,0))+'</span></h2>'
       +'<div class="grid">'+cells+'</div></section>';
   }).join('');
-  dk.innerHTML=secs
-   || (all.length?'<div class="empty">No '+(diskFilter==='image'?'photos':'videos')
-        +' here.</div>'
-     :'<div class="empty">Nothing offloaded yet.<br>Plug the camera in as <code>storage</code>.</div>');
+  document.getElementById(t).innerHTML=secs
+   || '<div class="empty">'+(all.length?'No '+(filters[t]==='image'?'photos':'videos')
+        +' here.':EMPTY[t])+'</div>';
+}
 
-  const recs=state.recordings||[],rc=document.getElementById('recs');
-  rc.innerHTML=recs.length?
-    '<section><h2>Tapes <span>'+recs.length+' / '+fmt(recs.reduce((a,r)=>a+r.size,0))
-    +'</span></h2><div class="grid">'+recs.map((i,n)=>cell(i,n,'recs')).join('')+'</div></section>'
-   :'<div class="empty">No recordings yet.<br>Plug the camera in as <code>live</code> and hit record.</div>';
-  document.getElementById('recnote').textContent=recs.length?'tap to play in-app':'';
-
+function render(){
+  renderTab('disk'); renderTab('caps');
   document.querySelectorAll('.cell').forEach(el=>{
     el.onclick=ev=>{
       ev.preventDefault();
@@ -1178,17 +1211,17 @@ function render(){
         sel.has(p)?sel.delete(p):sel.add(p);
         el.classList.toggle('sel'); updateSelBar(); return;
       }
-      const list=el.dataset.list==='disk'?flatDisk():state.recordings;
-      openLb(list,parseInt(el.dataset.idx,10));
+      openLb(flat(el.dataset.list),parseInt(el.dataset.idx,10));
     };
   });
 }
 
-document.querySelectorAll('#filter button').forEach(b=>{
+document.querySelectorAll('[data-filter] button').forEach(b=>{
   b.onclick=()=>{
-    diskFilter=b.dataset.f; store.set('cd-filter',diskFilter);
+    const t=b.parentElement.dataset.filter;
+    filters[t]=b.dataset.f; store.set(filterKey[t],filters[t]);
     // Never download something the filter is hiding.
-    if(selMode){ const vis=new Set(flatDisk().map(i=>i.path));
+    if(selMode===t){ const vis=new Set(flat(t).map(i=>i.path));
       sel.forEach(p=>{ if(!vis.has(p)) sel.delete(p); }); updateSelBar(); }
     render();
   };
@@ -1204,7 +1237,7 @@ selfmt.innerHTML=FORMATS.map(f=>'<option value="'+f[0]+'">'+f[1]+'</option>').jo
 selfmt.value=exportFmt;
 selfmt.onchange=()=>{ exportFmt=selfmt.value; store.set('cd-fmt',exportFmt); updateSelBar(); };
 
-const isVideoPath=p=>[...state.dumps.flatMap(d=>d.items),...(state.recordings||[])]
+const isVideoPath=p=>[...state.dumps,...state.captures].flatMap(g=>g.items)
   .some(i=>i.path===p&&i.kind==='video');
 function updateSelBar(){
   const ab=document.getElementById('actionbar');

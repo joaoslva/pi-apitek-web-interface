@@ -107,8 +107,12 @@ refused while the verified files were cleared.
 
 ## The UI
 
-Three tabs: **Live**, **Disk** (everything offloaded from the camera, photos
-and its own video clips, filterable to All / Photos / Videos), **Tapes**.
+Three tabs: **Live**, **Disk** and **Captures**. Disk is what the camera shot
+itself and was offloaded, its photos and its own video clips, one section per
+dump. Captures is what was shot through this app, tapes and snapshots
+together, one section per day. The files stay where they always were
+(`video/` and `media/snapshots/`); only the page groups them this way. Both
+tabs filter to All / Photos / Videos, each remembering its own choice.
 
 - **Viewfinder toggle.** The sensor is idle until you ask for it. Plugging the
   camera in does not start it streaming — `camera-live` runs no ffmpeg at all
