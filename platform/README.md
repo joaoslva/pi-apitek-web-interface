@@ -29,8 +29,14 @@ After installing, only what changed is reloaded:
 
 | Changed | Action |
 |---|---|
-| `/etc/systemd/` | `daemon-reload`; units are not restarted |
+| `/etc/systemd/` | `daemon-reload` |
 | `/etc/udev/` | reload rules, replay block `add` events |
+| a running service's unit or executable | restart it |
+
+Only long-running services are restarted. Oneshots (`camera-offload@`,
+`camera-net-fallback`) run the new file next time, and are never interrupted
+mid-offload. `camera-live` is skipped while it is recording, since a restart
+would end the recording; the deploy says so, and it needs restarting later.
 
 ## provision/
 
